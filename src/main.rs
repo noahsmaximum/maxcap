@@ -1283,6 +1283,13 @@ impl ApplicationHandler<UserEvent> for App {
                 size[1].max(180),
             ))
             .with_min_inner_size(winit::dpi::PhysicalSize::new(320, 180));
+        // Icon ordinal 1 from packaging/windows/maxcap.rc (macOS uses the bundle's icns).
+        #[cfg(windows)]
+        let attrs = {
+            use winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
+            let icon = |px| winit::window::Icon::from_resource(1, Some(winit::dpi::PhysicalSize::new(px, px))).ok();
+            attrs.with_window_icon(icon(32)).with_taskbar_icon(icon(256))
+        };
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         self.window = Some(window.clone());
         self.reset_egui();

@@ -1,3 +1,5 @@
+<img src="assets/icon/maxcap.png" width="96" alt="MaxCap icon">
+
 # MaxCap
 
 A clean, low-latency viewer for USB HDMI capture cards on Windows and macOS: uncompressed

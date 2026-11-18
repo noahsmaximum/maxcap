@@ -34,6 +34,7 @@ rtx-video = ["dep:cc"]
 
 [build-dependencies]
 cc = { version = "1", optional = true }
+embed-resource = "3.0.12"
 
 [dev-dependencies]
 # Shader translation test (same naga as wgpu): proves the WGSL also builds for Metal.

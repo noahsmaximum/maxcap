@@ -20,7 +20,7 @@ lipo -create -output "$APP/Contents/MacOS/maxcap" \
     target/aarch64-apple-darwin/release/maxcap \
     target/x86_64-apple-darwin/release/maxcap
 sed "s/@VERSION@/$VERSION/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
-cp LICENSE README.md "$APP/Contents/Resources/"
+cp LICENSE README.md assets/icon/maxcap.icns "$APP/Contents/Resources/"
 mkdir -p "$APP/Contents/Resources/licenses"
 cp assets/fonts/OFL-*.txt "$APP/Contents/Resources/licenses/"
 

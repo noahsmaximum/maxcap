@@ -1,6 +1,22 @@
 fn main() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        windows_resources();
+    }
     #[cfg(feature = "rtx-video")]
     rtx_video();
+}
+
+/// App icon + version info (packaging/windows/maxcap.rc).
+fn windows_resources() {
+    println!("cargo:rerun-if-changed=packaging/windows/maxcap.rc");
+    println!("cargo:rerun-if-changed=assets/icon/maxcap.ico");
+    let v = std::env::var("CARGO_PKG_VERSION").unwrap();
+    let n: Vec<&str> = v.split(['.', '-', '+']).take(3).collect();
+    let num = format!("{},{},{},0", n[0], n.get(1).unwrap_or(&"0"), n.get(2).unwrap_or(&"0"));
+    let macros = [format!("VER_STR=\"{v}\""), format!("VER_NUM={num}")];
+    embed_resource::compile("packaging/windows/maxcap.rc", &macros)
+        .manifest_optional()
+        .unwrap();
 }
 
 /// Compile the NGX shim against the RTX Video SDK and put the VSR runtime next to the

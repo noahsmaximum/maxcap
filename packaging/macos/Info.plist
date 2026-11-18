@@ -10,6 +10,8 @@
     <string>com.github.noahsmaximum.maxcap</string>
     <key>CFBundleExecutable</key>
     <string>maxcap</string>
+    <key>CFBundleIconFile</key>
+    <string>maxcap</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleVersion</key>
