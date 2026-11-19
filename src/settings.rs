@@ -72,6 +72,15 @@ impl ScaleFilter {
     }
 }
 
+/// How in-between frames are made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FrameGenMethod {
+    /// NVIDIA optical-flow engine + MaxCap's warp (Turing or newer).
+    NvOpticalFlow,
+    /// RIFE neural interpolation on DirectML (experimental, `rife` builds).
+    Rife,
+}
+
 /// AI upscaling of the picture before it's fitted to the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Upscaler {
@@ -260,8 +269,11 @@ pub struct Settings {
     pub upscale_target: UpscaleTarget,
     /// RTX VSR quality 1 (low) ..= 4 (ultra).
     pub vsr_quality: u8,
-    /// NVIDIA optical-flow frame generation (2×, adds ~half a source frame of latency).
+    /// NVIDIA optical-flow frame generation (adds up to a source frame of latency).
     pub frame_gen: bool,
+    /// Frames shown per source frame: 2..=4, or 0 = fit the display's refresh rate.
+    pub frame_gen_factor: u8,
+    pub frame_gen_method: FrameGenMethod,
     /// Artifact guard for generated frames: 0 = off .. 1 = strictest.
     pub frame_gen_guard: f32,
     pub antiring: f32,
@@ -365,6 +377,8 @@ impl Default for Settings {
             upscale_target: UpscaleTarget::Window,
             vsr_quality: 4,
             frame_gen: false,
+            frame_gen_factor: 2,
+            frame_gen_method: FrameGenMethod::NvOpticalFlow,
             frame_gen_guard: 0.5,
             antiring: 0.6,
             linear_light: false,

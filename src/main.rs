@@ -6,6 +6,8 @@ mod audio;
 mod capture;
 mod dsp;
 mod render;
+#[cfg(feature = "rife")]
+mod rife;
 #[cfg(all(windows, feature = "rtx-video"))]
 mod rtx;
 #[cfg(windows)]
@@ -92,10 +94,12 @@ struct App {
     pending_shot: Option<(PendingShot, Arc<AtomicBool>)>,
     toast: Option<(String, Instant)>,
     next_ui_repaint: Option<Instant>,
-    /// Wakes the loop at a precise instant (frame generation's real-frame swap);
+    /// Wakes the loop at a precise instant (frame generation's next frame);
     /// winit's WaitUntil is only as fine as the 15.6 ms system tick.
     pacer: std::sync::mpsc::Sender<Instant>,
     pacer_sent: Option<Instant>,
+    /// Last display refresh-rate check (for frame generation's "fit display").
+    refresh_checked: Option<Instant>,
     last_idle_redraw: Instant,
     last_render: Instant,
     /// MAXCAP_SMOKE=<secs>: log stats, screenshot at 3 s, exit after N s.
@@ -121,6 +125,13 @@ impl App {
         }
         let proxy_for_assets = proxy.clone();
         let pacer = spawn_pacer(proxy.clone());
+        #[cfg(feature = "rife")]
+        {
+            let p = proxy.clone();
+            let _ = rife::WAKE.set(Box::new(move || {
+                let _ = p.send_event(UserEvent::Wake);
+            }));
+        }
         let last_seen = settings.clone();
         Self {
             proxy,
@@ -160,6 +171,7 @@ impl App {
             next_ui_repaint: None,
             pacer,
             pacer_sent: None,
+            refresh_checked: None,
             last_idle_redraw: Instant::now(),
             last_render: Instant::now(),
             last_seen,
@@ -879,6 +891,14 @@ impl App {
         // Frame generation runs on the queue between submissions, like the upscaler
         // below (which then upscales whichever frame is on screen).
         let arrival = (last_arrival_ns > 0).then(|| epoch + Duration::from_nanos(last_arrival_ns));
+        if self.refresh_checked.is_none_or(|t| t0 - t > Duration::from_secs(2)) {
+            self.refresh_checked = Some(t0);
+            let hz = window
+                .current_monitor()
+                .and_then(|m| m.refresh_rate_millihertz())
+                .map(|mhz| mhz as f64 / 1000.0);
+            g.video.set_display_refresh(hz);
+        }
         if g
             .video
             .encode_framegen(&g.device, &g.queue, &mut encoder, arrival, &self.settings)

@@ -1,9 +1,10 @@
-//! Optional 2× frame generation: the GPU's optical-flow engine measures motion
+//! Optional 2×–4× frame generation: the GPU's optical-flow engine measures motion
 //! between the previous source frame and the one that just arrived (both
-//! directions), and framegen_warp.wgsl builds the frame halfway between them. That
-//! frame is shown at once and the real one half a source interval later, so motion
-//! is sampled twice as often, at the cost of showing the real frame ~half a frame
-//! late.
+//! directions), and framegen_warp.wgsl builds the frames in between (at t = 1/N,
+//! 2/N, ...). The first is shown at once, the others every 1/N of a source interval,
+//! and the real frame last, so motion is sampled N times as often at the cost of
+//! showing the real frame (N-1)/N of a frame late. Flow runs once per source frame;
+//! each in-between frame is one warp pass into `shown`.
 //!
 //! Per new source frame, in the frame encoder: luma of the frame → `luma[cur]`
 //! (flow input), the frame itself → `colour[cur]`, and an empty pass "touches" the
@@ -14,7 +15,7 @@
 #![cfg_attr(not(windows), allow(dead_code, unused_imports, unused_variables))]
 
 use super::{INTERMEDIATE, SourceBinding, fullscreen_pipeline, tex_entry, ubo_entry};
-use crate::settings::Settings;
+use crate::settings::{FrameGenMethod, Settings};
 use bytemuck::{Pod, Zeroable};
 use std::time::{Duration, Instant};
 
@@ -88,11 +89,22 @@ pub struct FrameGen {
     interval: f64,
     /// Queued by `encode` for `dispatch`: the new frame's arrival.
     pending: Option<Instant>,
-    /// Flow is queued; the warp pass still has to run.
+    /// A warp pass for `phase` still has to run.
     warp_pending: bool,
-    showing_generated: bool,
-    real_due: Option<Instant>,
+    /// Frames shown per source frame for the current pair.
+    factor: u32,
+    /// 0 = the real frame is on screen, k = the k-th in-between frame (t = k/factor).
+    phase: u32,
+    /// Arrival of the newest source frame: phase k is due at base + (k-1)/factor of
+    /// an interval, the real frame at base + (factor-1)/factor.
+    base: Option<Instant>,
+    /// Display refresh rate, for the "fit display" factor.
+    refresh_hz: Option<f64>,
     reason: Option<String>,
+    /// RIFE path (experimental); `use_rife` while it's the active method.
+    #[cfg(feature = "rife")]
+    rife: super::rifegen::RifeGen,
+    use_rife: bool,
 }
 
 impl FrameGen {
@@ -174,40 +186,92 @@ impl FrameGen {
             interval: 1.0 / 60.0,
             pending: None,
             warp_pending: false,
-            showing_generated: false,
-            real_due: None,
+            factor: 2,
+            phase: 0,
+            base: None,
+            refresh_hz: None,
             reason: None,
+            #[cfg(feature = "rife")]
+            rife: super::rifegen::RifeGen::new(device),
+            use_rife: false,
         }
     }
 
     /// The generated frame, while it's the one on screen: scale-pass group 0, plus
     /// its view and an id for the AI upscaler.
     pub fn showing(&self) -> Option<(&wgpu::BindGroup, &wgpu::TextureView, u64)> {
+        #[cfg(feature = "rife")]
+        if self.use_rife {
+            return self.rife.showing();
+        }
         let t = self.targets.as_ref()?;
-        self.showing_generated
-            .then_some((&t.scale_bg, &t.shown_view, t.id))
+        (self.phase > 0).then_some((&t.scale_bg, &t.shown_view, t.id))
     }
 
-    /// When the real frame should replace the generated one on screen.
+    /// Changes whenever a different frame goes on screen (re-upscale key).
+    pub fn display_key(&self, seq: u64) -> u64 {
+        #[cfg(feature = "rife")]
+        if self.use_rife {
+            return self.rife.display_key();
+        }
+        seq.wrapping_mul(8) | self.phase as u64
+    }
+
+    /// When the next frame (in-between or real) should go on screen.
     pub fn due(&self) -> Option<Instant> {
-        self.real_due
+        #[cfg(feature = "rife")]
+        if self.use_rife {
+            return self.rife.due();
+        }
+        let base = self.base.filter(|_| self.phase > 0)?;
+        let k = self.phase as f64 / self.factor as f64;
+        Some(base + Duration::from_secs_f64(self.interval * k))
+    }
+
+    pub fn set_refresh(&mut self, hz: Option<f64>) {
+        self.refresh_hz = hz.filter(|h| *h > 1.0);
+    }
+
+    /// Frames per source frame for this setting, source rate and display.
+    fn pick_factor(&self, s: &Settings) -> u32 {
+        match s.frame_gen_factor {
+            f @ 2..=4 => f as u32,
+            _ => {
+                let fps = 1.0 / self.interval.max(1e-3);
+                let fit = self.refresh_hz.map_or(2.0, |hz| (hz / fps + 0.05).floor());
+                (fit as u32).clamp(2, 4)
+            }
+        }
+    }
+
+    fn show_real(&mut self) {
+        self.phase = 0;
+        self.base = None;
+        self.warp_pending = false;
     }
 
     pub fn status(&self) -> Option<(String, bool)> {
         if let Some(r) = &self.reason {
             return Some((r.clone(), false));
         }
+        #[cfg(feature = "rife")]
+        if self.use_rife {
+            return self.rife.status(self.refresh_hz);
+        }
         let t = self.targets.as_ref()?;
         let fps = 1.0 / self.interval.max(1e-3);
-        Some((
-            format!(
-                "{fps:.0} → {:.0} fps · +{:.1} ms · flow {}px",
-                fps * 2.0,
-                self.interval * 500.0,
-                t.grid
-            ),
-            true,
-        ))
+        let n = self.factor as f64;
+        let out = fps * n;
+        let mut text = format!(
+            "{fps:.0} → {out:.0} fps ({n}×) · +{:.1} ms · flow {}px",
+            self.interval * 1000.0 * (n - 1.0) / n,
+            t.grid
+        );
+        let over = self.refresh_hz.filter(|hz| out > hz * 1.03);
+        if let Some(hz) = over {
+            text += &format!(" · display is {hz:.0} Hz");
+        }
+        Some((text, over.is_none()))
     }
 
     fn wait_idle(&mut self) {
@@ -227,11 +291,9 @@ impl FrameGen {
         {
             self.flow = None;
         }
-        self.showing_generated = false;
-        self.real_due = None;
+        self.show_real();
         self.prev_arrival = None;
         self.last_seq = u64::MAX;
-        self.warp_pending = false;
     }
 
     /// Per render: flip to the real frame when it's due, and stage a new source
@@ -252,8 +314,37 @@ impl FrameGen {
         if !s.frame_gen {
             self.reason = None;
             self.reset();
+            self.leave_rife();
             return false;
         }
+        if s.frame_gen_method == FrameGenMethod::Rife {
+            #[cfg(not(feature = "rife"))]
+            {
+                self.reset();
+                self.reason = Some("this build has no RIFE support (rife feature)".into());
+                return false;
+            }
+            #[cfg(feature = "rife")]
+            {
+                if !self.use_rife {
+                    self.reset();
+                    self.use_rife = true;
+                }
+                self.reason = None;
+                return self.rife.encode(
+                    device,
+                    queue,
+                    encoder,
+                    src,
+                    frame_seq,
+                    arrival,
+                    s,
+                    scale,
+                    self.refresh_hz,
+                );
+            }
+        }
+        self.leave_rife();
         #[cfg(not(windows))]
         {
             self.reason = Some("Windows + NVIDIA (Turing or newer) only".into());
@@ -261,13 +352,23 @@ impl FrameGen {
         }
         #[cfg(windows)]
         {
+            // Step through the in-between frames as they come due (skipping any
+            // that are already late), then the real one.
             let now = Instant::now();
-            if self.real_due.is_some_and(|t| now >= t) {
-                self.showing_generated = false;
-                self.real_due = None;
+            let mut stepped = false;
+            while self.due().is_some_and(|d| now >= d) {
+                self.phase += 1;
+                stepped = true;
+                if self.phase >= self.factor {
+                    self.show_real();
+                    break;
+                }
+            }
+            if stepped && self.phase > 0 {
+                self.warp_pending = true;
             }
             let Some(src) = src else {
-                self.showing_generated = false;
+                self.show_real();
                 return false;
             };
             if frame_seq == self.last_seq || frame_seq == u64::MAX {
@@ -291,8 +392,7 @@ impl FrameGen {
                     self.flow = None;
                 }
                 self.prev_arrival = None;
-                self.showing_generated = false;
-                self.real_due = None;
+                self.show_real();
             }
             if self.flow.is_none() {
                 let r = OpticalFlow::new(device, queue, size[0], size[1]);
@@ -359,8 +459,7 @@ impl FrameGen {
                 },
             );
             if !(interpolate && t.filled >= 2) {
-                self.showing_generated = false;
-                self.real_due = None;
+                self.show_real();
                 return false;
             }
             // Leave both flow textures as render targets in wgpu's tracking: the
@@ -383,14 +482,28 @@ impl FrameGen {
                     multiview_mask: None,
                 }));
             }
+            self.factor = self.pick_factor(s);
             self.pending = Some(arrival);
             true
+        }
+    }
+
+    fn leave_rife(&mut self) {
+        if self.use_rife {
+            #[cfg(feature = "rife")]
+            self.rife.reset();
+            self.use_rife = false;
         }
     }
 
     /// Queue the optical flow for the frame staged by `encode`. Call right after
     /// submitting that encoder.
     pub fn dispatch(&mut self) {
+        #[cfg(feature = "rife")]
+        if self.use_rife {
+            self.rife.after_submit();
+            return;
+        }
         #[cfg(windows)]
         {
             let Some(arrival) = self.pending.take() else { return };
@@ -406,32 +519,40 @@ impl FrameGen {
             match flow.execute(set) {
                 Ok(()) => {
                     self.warp_pending = true;
-                    self.showing_generated = true;
-                    self.real_due =
-                        Some(arrival + Duration::from_secs_f64(self.interval * 0.5));
+                    self.phase = 1;
+                    self.base = Some(arrival);
                 }
                 Err(e) => {
                     log::warn!("{e}");
                     self.reason = Some(e);
-                    self.showing_generated = false;
-                    self.real_due = None;
+                    self.show_real();
                 }
             }
         }
     }
 
-    /// Render the in-between frame (after `dispatch`, before anything reads
-    /// `showing`).
+    /// Render the in-between frame that's due (after `dispatch` or a phase step,
+    /// before anything reads `showing`).
     pub fn encode_warp(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         s: &Settings,
     ) {
+        let _ = device;
+        #[cfg(feature = "rife")]
+        if self.use_rife {
+            self.rife.encode_warp(device, queue, encoder);
+            return;
+        }
         if !std::mem::take(&mut self.warp_pending) {
             return;
         }
         let Some(t) = &self.targets else { return };
+        if self.phase == 0 {
+            return;
+        }
         let strength = s.frame_gen_guard.clamp(0.0, 1.0);
         let radius = (32.0 + (4.0 - 32.0) * strength) * t.size[1] as f32 / 1080.0;
         queue.write_buffer(
@@ -440,7 +561,7 @@ impl FrameGen {
             bytemuck::bytes_of(&WarpParams {
                 size: [t.size[0] as f32, t.size[1] as f32],
                 grid: t.grid as f32,
-                t: 0.5,
+                t: self.phase as f32 / self.factor as f32,
                 radius,
                 guard: (strength > 0.001) as u32,
                 softness: 0.04,

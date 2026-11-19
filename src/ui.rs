@@ -435,9 +435,28 @@ fn scaling_section(ui: &mut egui::Ui, v: &mut UiView) {
             );
         }
         row(ui, "Frame gen", |ui| {
-            theme::check(ui, &mut s.frame_gen, "2× motion smoothing (NVIDIA)");
+            theme::check(ui, &mut s.frame_gen, "Motion smoothing (NVIDIA)");
         });
         if s.frame_gen {
+            row(ui, "Method", |ui| {
+                combo(
+                    ui,
+                    "frame_gen_method",
+                    &mut s.frame_gen_method,
+                    &[
+                        (FrameGenMethod::NvOpticalFlow, "NVIDIA optical flow"),
+                        (FrameGenMethod::Rife, "RIFE (AI, experimental)"),
+                    ],
+                );
+            });
+            row(ui, "Multiplier", |ui| {
+                combo(
+                    ui,
+                    "frame_gen_factor",
+                    &mut s.frame_gen_factor,
+                    &[(0, "Fit display"), (2, "2×"), (3, "3×"), (4, "4×")],
+                );
+            });
             row(ui, "Artifact guard", |ui| {
                 ui.add(egui::Slider::new(&mut s.frame_gen_guard, 0.0..=1.0).fixed_decimals(2));
             });
@@ -449,7 +468,7 @@ fn scaling_section(ui: &mut egui::Ui, v: &mut UiView) {
             }
             note(
                 ui,
-                "Inserts a generated frame between each pair; the real frame shows half a frame later. For watching, not twitchy play. Needs a display at 2× the source rate.",
+                "Inserts 1–3 generated frames between each pair; the real frame shows up to a frame later (half at 2×, three quarters at 4×). For watching, not twitchy play. Fit display picks the most your refresh rate can show. With AI upscale, every frame is upscaled, so use a lower quality at 3–4×.",
             );
         }
         if matches!(

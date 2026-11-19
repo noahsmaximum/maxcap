@@ -6,6 +6,8 @@ use crate::settings::*;
 use bytemuck::{Pod, Zeroable};
 
 mod framegen;
+#[cfg(feature = "rife")]
+mod rifegen;
 mod upscale;
 
 pub const INTERMEDIATE: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
@@ -795,13 +797,13 @@ impl VideoRenderer {
             .src
             .as_ref()
             .map(|src| compute_geometry(src.width, src.height, target_size, s));
-        self.framegen.encode_warp(queue, encoder, s);
+        self.framegen.encode_warp(device, queue, encoder, s);
         let seq = self.last_converted_seq;
         let src = if seq == u64::MAX { None } else { self.src.as_ref() };
         // Re-upscale whenever the frame on screen changes: a new source frame, or the
-        // switch between a generated frame and the real one.
+        // step to the next generated frame / the real one.
         let generated = self.framegen.showing().map(|(_, view, id)| (view, id));
-        let display_seq = seq.wrapping_mul(2) | generated.is_some() as u64;
+        let display_seq = self.framegen.display_key(seq);
         self.upscale.encode(
             device,
             queue,
@@ -847,6 +849,11 @@ impl VideoRenderer {
     /// When the next render is due to swap a generated frame for the real one.
     pub fn framegen_due(&self) -> Option<std::time::Instant> {
         self.framegen.due()
+    }
+
+    /// Display refresh rate (Hz), for frame generation's "fit display" factor.
+    pub fn set_display_refresh(&mut self, hz: Option<f64>) {
+        self.framegen.set_refresh(hz);
     }
 
     pub fn framegen_status(&self) -> Option<(String, bool)> {
@@ -1512,6 +1519,8 @@ mod shader_tests {
             ("upscale_prep", include_str!("shaders/upscale_prep.wgsl")),
             ("framegen_luma", include_str!("shaders/framegen_luma.wgsl")),
             ("framegen_warp", include_str!("shaders/framegen_warp.wgsl")),
+            ("rife_prep", include_str!("shaders/rife_prep.wgsl")),
+            ("rife_warp", include_str!("shaders/rife_warp.wgsl")),
             ("ambient", include_str!("shaders/ambient.wgsl")),
         ] {
             let module = naga::front::wgsl::parse_str(src)

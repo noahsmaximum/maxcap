@@ -16,6 +16,8 @@ egui-winit = "0.37"
 env_logger = "0.11.11"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp", "gif"] }
 log = "0.4.35"
+# RIFE frame generation (experimental): ONNX Runtime 1.24 DirectML build, loaded at runtime.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["load-dynamic", "directml", "api-24"], optional = true }
 parking_lot = "0.13.0"
 png = "0.18.1"
 pollster = "1.0.1"
@@ -31,6 +33,9 @@ winit = "0.30"
 # NVIDIA RTX Video Super Resolution (Windows, RTX GPUs). Needs the RTX Video SDK on the
 # build machine: set NV_RTX_VIDEO_SDK, or unpack it to ./maxcap-deps/rtx-video-sdk.
 rtx-video = ["dep:cc"]
+# RIFE frame generation on DirectML (experimental, Windows). Needs onnxruntime.dll,
+# DirectML.dll and a trimmed RIFE model in ./maxcap-deps (see build.rs).
+rife = ["dep:ort"]
 
 [build-dependencies]
 cc = { version = "1", optional = true }

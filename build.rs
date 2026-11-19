@@ -4,6 +4,40 @@ fn main() {
     }
     #[cfg(feature = "rtx-video")]
     rtx_video();
+    #[cfg(feature = "rife")]
+    rife();
+}
+
+/// Put the ONNX Runtime DLLs and RIFE models from ./maxcap-deps next to the exe.
+#[cfg(feature = "rife")]
+fn rife() {
+    use std::path::PathBuf;
+    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let deps = manifest.join("maxcap-deps");
+    let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let Some(exe_dir) = out.ancestors().nth(3) else { return };
+    let mut files: Vec<PathBuf> = ["onnxruntime.dll", "DirectML.dll"]
+        .iter()
+        .map(|f| deps.join("onnxruntime").join(f))
+        .collect();
+    if let Ok(rd) = std::fs::read_dir(deps.join("rife")) {
+        files.extend(rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "onnx")));
+    }
+    for f in files {
+        println!("cargo:rerun-if-changed={}", f.display());
+        let dst = exe_dir.join(f.file_name().unwrap());
+        let stale = match (std::fs::metadata(&f), std::fs::metadata(&dst)) {
+            (Ok(a), Ok(b)) => a.len() != b.len(),
+            (Ok(_), Err(_)) => true,
+            _ => {
+                println!("cargo:warning=rife: missing {}", f.display());
+                false
+            }
+        };
+        if stale && let Err(e) = std::fs::copy(&f, &dst) {
+            println!("cargo:warning=rife: couldn't copy {}: {e}", f.display());
+        }
+    }
 }
 
 /// App icon + version info (packaging/windows/maxcap.rc).
