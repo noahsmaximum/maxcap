@@ -65,11 +65,13 @@ cargo build --release --features rtx-video
 
 `packaging/windows/package.ps1` builds the Windows release zip this way.
 
-**Frame generation (Windows + NVIDIA Turing or newer).** Scaling → Frame gen inserts an
-interpolated frame between each pair of source frames (2× motion). The GPU's optical-flow
-engine measures motion in both directions, and MaxCap's own shader warps and blends the
-two frames, easing into a crossfade wherever no motion fits. The real frame is shown half a
-source frame later, so it's for watching, not twitchy play. It uses the driver's
+**Frame generation (Windows + NVIDIA Turing or newer).** Scaling → Frame gen inserts 1–3
+interpolated frames between each pair of source frames (2×, 3× or 4× motion, or "Fit
+display" to match your refresh rate). The GPU's optical-flow engine measures motion in both
+directions once per source frame, and MaxCap's own shader warps and blends the two frames
+for each in-between frame, easing into a crossfade wherever no motion fits. The real frame
+is shown up to a source frame later (half at 2×, three quarters at 4×), so it's for
+watching, not twitchy play. It uses the driver's
 `nvofapi64.dll`; no SDK or extra files are needed.
 
 On a Mac, `packaging/macos/bundle.sh` builds a universal `MaxCap.app` into `dist/`.

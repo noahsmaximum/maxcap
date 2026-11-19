@@ -799,9 +799,9 @@ impl VideoRenderer {
         let seq = self.last_converted_seq;
         let src = if seq == u64::MAX { None } else { self.src.as_ref() };
         // Re-upscale whenever the frame on screen changes: a new source frame, or the
-        // switch between a generated frame and the real one.
+        // step to the next generated frame / the real one.
         let generated = self.framegen.showing().map(|(_, view, id)| (view, id));
-        let display_seq = seq.wrapping_mul(2) | generated.is_some() as u64;
+        let display_seq = seq.wrapping_mul(8) | self.framegen.phase() as u64;
         self.upscale.encode(
             device,
             queue,
@@ -847,6 +847,11 @@ impl VideoRenderer {
     /// When the next render is due to swap a generated frame for the real one.
     pub fn framegen_due(&self) -> Option<std::time::Instant> {
         self.framegen.due()
+    }
+
+    /// Display refresh rate (Hz), for frame generation's "fit display" factor.
+    pub fn set_display_refresh(&mut self, hz: Option<f64>) {
+        self.framegen.set_refresh(hz);
     }
 
     pub fn framegen_status(&self) -> Option<(String, bool)> {
