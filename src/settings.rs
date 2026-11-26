@@ -232,6 +232,88 @@ pub enum FrameStyle {
     Image,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Language {
+    English,
+    Francais,
+}
+
+/// Which lines the stats HUD shows. One flag per line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HudItems {
+    pub header: bool,
+    pub source: bool,
+    pub upscale: bool,
+    pub framegen: bool,
+    pub colour: bool,
+    pub fps: bool,
+    pub pacing: bool,
+    pub latency: bool,
+    pub gpu_cpu: bool,
+    pub audio: bool,
+    pub output: bool,
+    pub graph: bool,
+    /// Frame the HUD in the boxed card; off = bare text.
+    pub boxed: bool,
+}
+
+impl Default for HudItems {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
+impl HudItems {
+    pub const ALL: HudItems = HudItems {
+        header: true,
+        source: true,
+        upscale: true,
+        framegen: true,
+        colour: true,
+        fps: true,
+        pacing: true,
+        latency: true,
+        gpu_cpu: true,
+        audio: true,
+        output: true,
+        graph: true,
+        boxed: true,
+    };
+    const NONE: HudItems = HudItems {
+        header: false,
+        source: false,
+        upscale: false,
+        framegen: false,
+        colour: false,
+        fps: false,
+        pacing: false,
+        latency: false,
+        gpu_cpu: false,
+        audio: false,
+        output: false,
+        graph: false,
+        boxed: true,
+    };
+    pub const PRESETS: [(&'static str, HudItems); 5] = [
+        ("Everything", HudItems::ALL),
+        ("FPS only", HudItems { fps: true, boxed: false, ..HudItems::NONE }),
+        ("FPS + latency", HudItems { fps: true, latency: true, ..HudItems::NONE }),
+        (
+            "Gaming",
+            HudItems { fps: true, pacing: true, latency: true, graph: true, ..HudItems::NONE },
+        ),
+        (
+            "Diagnostics",
+            HudItems { header: true, source: true, fps: true, pacing: true, audio: true, ..HudItems::NONE },
+        ),
+    ];
+    /// Name of the matching built-in HUD preset, or "Custom".
+    pub fn preset_name(&self) -> &'static str {
+        Self::PRESETS.iter().find(|(_, p)| p == self).map_or("Custom", |(n, _)| n)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -342,7 +424,16 @@ pub struct Settings {
     // --- overlay ---
     pub show_stats: bool,
     pub stats_corner: u8,
+    pub hud: HudItems,
+    /// HUD top-left as a fraction of the window (None = snap to `stats_corner`).
+    pub hud_pos: Option<[f32; 2]>,
+    pub hud_opacity: f32,
+    /// Window opacity in ghost mode (click-through, borderless, on top).
+    pub ghost_opacity: f32,
+    /// Capture card name -> preset name applied when that card becomes active.
+    pub device_profiles: std::collections::BTreeMap<String, String>,
     pub ui_scale: f32,
+    pub language: Language,
     pub screenshot_dir: Option<String>,
 }
 
@@ -423,7 +514,13 @@ impl Default for Settings {
             audio_nr_strength: 0.6,
             show_stats: false,
             stats_corner: 0,
+            hud: HudItems::ALL,
+            hud_pos: None,
+            hud_opacity: 1.0,
+            ghost_opacity: 0.6,
+            device_profiles: Default::default(),
             ui_scale: 1.0,
+            language: Language::English,
             screenshot_dir: None,
         }
     }
@@ -559,7 +656,11 @@ impl Settings {
         self.window_size = keep.window_size;
         self.screenshot_dir = keep.screenshot_dir;
         self.ui_scale = keep.ui_scale;
+        self.language = keep.language;
         self.start_fullscreen = keep.start_fullscreen;
+        self.hud_pos = keep.hud_pos;
+        self.ghost_opacity = keep.ghost_opacity;
+        self.device_profiles = keep.device_profiles;
     }
 
     /// The parts of these settings a preset stores (machine-specific fields cleared).
@@ -571,6 +672,8 @@ impl Settings {
         p.audio_output = None;
         p.window_size = None;
         p.screenshot_dir = None;
+        p.hud_pos = None;
+        p.device_profiles.clear();
         p
     }
 
@@ -694,6 +797,179 @@ pub fn delete_preset(path: &std::path::Path) -> Result<(), String> {
     std::fs::remove_file(path).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------------
+// Import / export: one JSON file holding any number of profiles.
+
+#[derive(Serialize, Deserialize)]
+struct ProfileBundle {
+    maxcap_profiles: u32,
+    profiles: Vec<PresetFile>,
+}
+
+/// Serialise profiles (device-specific fields stripped) into one shareable file.
+pub fn bundle_to_json(profiles: &[(String, Settings)]) -> Result<String, String> {
+    let b = ProfileBundle {
+        maxcap_profiles: 1,
+        profiles: profiles
+            .iter()
+            .map(|(n, s)| PresetFile { name: n.clone(), settings: s.as_preset() })
+            .collect(),
+    };
+    serde_json::to_string_pretty(&b).map_err(|e| e.to_string())
+}
+
+/// Read a bundle, or a single preset / plain settings.json (named `fallback_name`).
+pub fn bundle_from_json(text: &str, fallback_name: &str) -> Result<Vec<(String, Settings)>, String> {
+    if let Ok(b) = serde_json::from_str::<ProfileBundle>(text) {
+        return Ok(b
+            .profiles
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let n = if p.name.trim().is_empty() { format!("{fallback_name} {}", i + 1) } else { p.name };
+                (n, p.settings)
+            })
+            .collect());
+    }
+    match parse_preset(text) {
+        Some((n, s)) => Ok(vec![(if n.trim().is_empty() { fallback_name.to_owned() } else { n }, s)]),
+        None => Err("not a MaxCap profile file".into()),
+    }
+}
+
+/// Write every saved preset to `path`. Returns how many were exported.
+pub fn export_profiles(path: &std::path::Path) -> Result<usize, String> {
+    let all: Vec<(String, Settings)> = list_presets()
+        .into_iter()
+        .filter_map(|e| load_preset(&e.path).map(|s| (e.name, s)))
+        .collect();
+    if all.is_empty() {
+        return Err("no presets to export".into());
+    }
+    std::fs::write(path, bundle_to_json(&all)?).map_err(|e| e.to_string())?;
+    Ok(all.len())
+}
+
+/// Add the profiles in `path` as presets; existing names are kept ("Name (2)").
+pub fn import_profiles(path: &std::path::Path) -> Result<usize, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let fallback = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Imported".into());
+    let profiles = bundle_from_json(&text, &fallback)?;
+    let mut n = 0;
+    for (name, st) in &profiles {
+        let mut unique = name.trim().to_owned();
+        let mut k = 2;
+        while presets_dir().join(format!("{}.json", sanitize(&unique))).exists() {
+            unique = format!("{} ({k})", name.trim());
+            k += 1;
+        }
+        save_preset(&unique, st)?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Ready-made profiles built from the existing options. Written once as normal preset
+/// files (so Ctrl+1..9, rename and delete all work); never recreated once seeded.
+fn builtin_profiles() -> Vec<(&'static str, Settings)> {
+    let d = Settings::default;
+    let mut v = Vec::new();
+
+    let mut s = d();
+    s.scale_filter = ScaleFilter::Lanczos2;
+    s.present_mode = PresentMode::Immediate;
+    s.frame_latency = 1;
+    s.sharpen = 0.0;
+    s.audio_nr = false;
+    s.audio_buffer_ms = 20.0;
+    s.hud = HudItems::PRESETS[1].1;
+    s.show_stats = true;
+    v.push(("Gaming - low latency", s));
+
+    let mut s = d();
+    s.scale_filter = ScaleFilter::Lanczos3;
+    s.antiring = 0.8;
+    s.sharpen = 0.2;
+    s.present_mode = PresentMode::Mailbox;
+    s.output_depth = OutputDepth::Bits10;
+    s.dither = true;
+    s.background_mode = BackgroundMode::Ambient;
+    s.ambient_style = AmbientStyle::Glow;
+    s.audio_buffer_ms = 60.0;
+    v.push(("Cinema - quality", s));
+
+    let mut s = d();
+    s.scale_filter = ScaleFilter::Nearest;
+    s.aspect_mode = AspectMode::Integer;
+    s.sharpen = 0.0;
+    s.frame_style = FrameStyle::PixelCard;
+    s.present_mode = PresentMode::Immediate;
+    v.push(("Retro pixel-perfect", s));
+
+    let mut s = d();
+    s.scale_filter = ScaleFilter::SharpBilinear;
+    s.aspect_mode = AspectMode::Fit;
+    s.aspect_override = AspectOverride::R4_3;
+    s.saturation = 1.1;
+    s.background_mode = BackgroundMode::Ambient;
+    s.ambient_style = AmbientStyle::Mirror;
+    v.push(("CRT era 4:3", s));
+
+    let mut s = d();
+    s.scale_filter = ScaleFilter::Lanczos3;
+    s.upscaler = Upscaler::RtxVsr;
+    s.upscale_target = UpscaleTarget::Window;
+    s.sharpen = 0.15;
+    v.push(("AI upscale (RTX)", s));
+
+    let mut s = d();
+    s.scale_filter = ScaleFilter::Lanczos2;
+    s.frame_gen = true;
+    s.frame_gen_factor = 2;
+    s.present_mode = PresentMode::Fifo;
+    s.audio_buffer_ms = 80.0;
+    v.push(("Smooth motion (frame gen)", s));
+
+    let mut s = d();
+    s.always_on_top = true;
+    s.scale_filter = ScaleFilter::Bilinear;
+    s.audio_enabled = true;
+    s.audio_buffer_ms = 20.0;
+    s.hud = HudItems::PRESETS[1].1;
+    s.show_stats = true;
+    v.push(("Streaming / OBS window", s));
+    v
+}
+
+/// Create each built-in profile once. `.profiles-seeded` lists the names already
+/// created, so a profile you delete stays deleted and new built-ins still arrive.
+pub fn seed_builtin_presets() {
+    if std::env::var_os("MAXCAP_SMOKE").is_some() {
+        return;
+    }
+    let marker = config_dir().join(".profiles-seeded");
+    let mut seeded: Vec<String> = std::fs::read_to_string(&marker)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    let mut changed = false;
+    for (name, st) in builtin_profiles() {
+        if seeded.iter().any(|n| n == name) {
+            continue;
+        }
+        if !presets_dir().join(format!("{}.json", sanitize(name))).exists() {
+            let _ = save_preset(name, &st);
+        }
+        seeded.push(name.to_owned());
+        changed = true;
+    }
+    if changed {
+        let _ = std::fs::create_dir_all(config_dir());
+        let _ = std::fs::write(marker, seeded.join("\n"));
+    }
+}
+
 /// Copy a picked image into the app's images folder; returns the stored path.
 pub fn import_image(src: &std::path::Path) -> Result<String, String> {
     let dir = images_dir();
@@ -771,6 +1047,43 @@ mod tests {
         }
         assert!(list_presets().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn bundle_roundtrip_and_single_file() {
+        let mut a = Settings::default();
+        a.scale_filter = ScaleFilter::Nearest;
+        a.device_name = Some("Card".into());
+        a.hud_pos = Some([0.5, 0.5]);
+        a.device_profiles.insert("Card".into(), "X".into());
+        let b = Settings::default();
+        let json = bundle_to_json(&[("A".into(), a.clone()), ("B".into(), b)]).unwrap();
+        let back = bundle_from_json(&json, "fb").unwrap();
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].0, "A");
+        assert_eq!(back[0].1.scale_filter, ScaleFilter::Nearest);
+        assert_eq!(back[0].1.device_name, None, "devices are stripped on export");
+        assert_eq!(back[0].1.hud_pos, None);
+        assert!(back[0].1.device_profiles.is_empty());
+        // A plain settings.json imports as one profile named after the file.
+        let plain = serde_json::to_string(&a).unwrap();
+        let one = bundle_from_json(&plain, "mine").unwrap();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].0, "mine");
+        assert!(bundle_from_json("garbage", "x").is_err());
+    }
+
+    #[test]
+    fn preset_keeps_card_links_and_hud_position() {
+        let mut mine = Settings::default();
+        mine.hud_pos = Some([0.2, 0.3]);
+        mine.device_profiles.insert("Card".into(), "Gaming".into());
+        let mut look = Settings::default();
+        look.saturation = 1.3;
+        mine.apply_preset(&look);
+        assert_eq!(mine.hud_pos, Some([0.2, 0.3]));
+        assert_eq!(mine.device_profiles.get("Card").map(String::as_str), Some("Gaming"));
+        assert!(mine.matches_preset(&look));
     }
 
     #[test]

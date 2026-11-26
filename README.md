@@ -77,6 +77,13 @@ watching, not twitchy play. It uses the driver's
 On a Mac, `packaging/macos/bundle.sh` builds a universal `MaxCap.app` into `dist/`.
 Linux builds and runs, but has no capture backend yet.
 
+## Interface, HUD and profiles
+
+- **HUD**: every line can be ticked on or off (Settings > Overlay & capture), with presets (Everything, FPS only, FPS + latency, Gaming, Diagnostics). Drag the HUD anywhere with the mouse; double-click it to snap back to its corner. HUD opacity slider.
+- **Profiles**: 7 built-in presets are created on first run. *Export all* / *import* move every preset through one .json file. *Use for this card* links the active preset to the current capture card: it loads automatically when that card becomes active.
+- **Languages**: French and English interface (Settings > Overlay & capture > Language). English by default; `MAXCAP_LANG=en` or `fr` forces a language for one run. Strings live in `src/i18n.rs`; a missing entry falls back to English.
+- **Ghost mode**: borderless, always on top, see-through (opacity setting), clicks pass through. Never saved: a restart always comes back to a normal window.
+
 ## Controls
 
 | Key | Action |
@@ -87,6 +94,7 @@ Linux builds and runs, but has no capture backend yet.
 | Ctrl+S / F12 | Screenshot |
 | M | Mute |
 | P | Pin on top |
+| G / Ctrl+Alt+G | Ghost mode (borderless, see-through, click-through). Ctrl+Alt+G also works from any app |
 | I | Toggle integer scaling |
 | R | Reset picture |
 | Ctrl+1 … 9 | Load preset 1–9 |
@@ -119,6 +127,8 @@ capture thread (MMCSS "Capture")            render thread (winit)
 | `MAXCAP_SHOT_PATH=<file>` | Screenshot destination. |
 | `MAXCAP_NO_SOURCE=1` | Open no device (UI screenshots). |
 | `MAXCAP_CONFIG_DIR=<folder>` | Use a separate settings/presets/images folder. |
+| `MAXCAP_LANG=en` or `fr` | Force the interface language. |
+| `MAXCAP_GHOST=1` | Start in ghost mode. |
 
 ## Credits
 

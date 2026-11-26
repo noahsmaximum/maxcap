@@ -40,6 +40,9 @@ pub enum UiAction {
     LoadPreset(std::path::PathBuf),
     DeletePreset(std::path::PathBuf),
     OpenPresetsFolder,
+    ExportProfiles,
+    ImportProfiles,
+    ToggleGhost,
 }
 
 pub struct UiView<'a> {
@@ -66,6 +69,7 @@ pub struct UiView<'a> {
     pub present_modes: &'a [PresentMode],
     pub ten_bit_available: bool,
     pub fullscreen: bool,
+    pub ghost: bool,
     pub stats: &'a Stats,
     pub presets: &'a [crate::settings::PresetEntry],
     pub active_preset: Option<&'a crate::settings::PresetEntry>,
@@ -87,14 +91,14 @@ fn combo<T: PartialEq + Copy>(ui: &mut egui::Ui, id: &str, value: &mut T, option
     let cur = options
         .iter()
         .find(|(v, _)| *v == *value)
-        .map(|(_, l)| *l)
+        .map(|(_, l)| crate::i18n::tr(l))
         .unwrap_or("?");
     egui::ComboBox::from_id_salt(id)
         .selected_text(cur)
         .width(200.0)
         .show_ui(ui, |ui| {
             for (v, l) in options {
-                ui.selectable_value(value, *v, *l);
+                ui.selectable_value(value, *v, crate::i18n::tr(l));
             }
         });
 }
@@ -106,7 +110,7 @@ fn row(ui: &mut egui::Ui, label: &str, add: impl FnOnce(&mut egui::Ui)) {
             egui::Layout::left_to_right(egui::Align::Center),
             |ui| {
                 ui.set_min_width(LABEL_W);
-                ui.label(RichText::new(label).color(INK_SOFT));
+                ui.label(RichText::new(crate::i18n::tr(label)).color(INK_SOFT));
             },
         );
         add(ui);
@@ -122,7 +126,7 @@ fn ellipsize(s: &str, max: usize) -> String {
 }
 
 fn note(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).size(12.0).color(INK_SOFT));
+    ui.label(RichText::new(crate::i18n::tr(text)).size(12.0).color(INK_SOFT));
 }
 
 fn state_tag(ui: &mut egui::Ui, state: &CaptureState) {
@@ -153,7 +157,7 @@ pub fn settings_panel(ui: &mut egui::Ui, v: &mut UiView) {
                         theme::wordmark(ui, 28.0);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if theme::button(ui, "esc", Btn::Secondary)
-                                .on_hover_text("Close (F1 / Tab / Esc)")
+                                .on_hover_text(crate::i18n::tr("Close (F1 / Tab / Esc)"))
                                 .clicked()
                             {
                                 v.actions.push(UiAction::Close);
@@ -213,7 +217,7 @@ fn device_section(ui: &mut egui::Ui, v: &mut UiView) {
                 .map(|d| d.name.clone())
                 .or(v.settings.device_name.clone());
             egui::ComboBox::from_id_salt("dev")
-                .selected_text(ellipsize(&cur.unwrap_or_else(|| "None".into()), 18))
+                .selected_text(ellipsize(&cur.unwrap_or_else(|| crate::i18n::tr("None").into()), 18))
                 .width(150.0)
                 .show_ui(ui, |ui| {
                     for d in v.devices {
@@ -226,7 +230,7 @@ fn device_section(ui: &mut egui::Ui, v: &mut UiView) {
                     }
                 });
             if theme::button(ui, "scan", Btn::Secondary)
-                .on_hover_text("Rescan devices")
+                .on_hover_text(crate::i18n::tr("Rescan devices"))
                 .clicked()
             {
                 v.actions.push(UiAction::RefreshDevices);
@@ -243,7 +247,7 @@ fn device_section(ui: &mut egui::Ui, v: &mut UiView) {
                 .height(420.0)
                 .show_ui(ui, |ui| {
                     let auto = v.settings.format_key.is_none();
-                    if ui.selectable_label(auto, "Auto (best quality)").clicked() {
+                    if ui.selectable_label(auto, crate::i18n::tr("Auto (best quality)")).clicked() {
                         v.settings.format_key = None;
                     }
                     for f in v.formats {
@@ -285,10 +289,17 @@ fn device_section(ui: &mut egui::Ui, v: &mut UiView) {
 pub fn slow_mode_hint(f: &FormatInfo, measured: f32) -> Option<String> {
     let nominal = f.fps() as f32;
     if measured > 1.0 && nominal > 0.0 && measured < nominal * 0.8 {
-        Some(format!(
-            "Device is only delivering ~{measured:.0} of {nominal:.0} fps in this mode (USB bandwidth / card limit). \
-             A lower resolution may give true {nominal:.0} fps."
-        ))
+        Some(if crate::i18n::is_fr() {
+            format!(
+                "La carte ne livre que ~{measured:.0} des {nominal:.0} i/s de ce mode (bande passante USB / limite de la carte). \
+                 Une résolution plus basse peut donner de vrais {nominal:.0} i/s."
+            )
+        } else {
+            format!(
+                "Device is only delivering ~{measured:.0} of {nominal:.0} fps in this mode (USB bandwidth / card limit). \
+                 A lower resolution may give true {nominal:.0} fps."
+            )
+        })
     } else {
         None
     }
@@ -316,7 +327,7 @@ fn picture_section(ui: &mut egui::Ui, v: &mut UiView) {
                 ],
             );
         });
-        let r_auto = format!("Auto ({})", if r.full_range { "full" } else { "limited" });
+        let r_auto = format!("Auto ({})", crate::i18n::tr(if r.full_range { "full" } else { "limited" }));
         row(ui, "Range", |ui| {
             combo(
                 ui,
@@ -341,7 +352,7 @@ fn picture_section(ui: &mut egui::Ui, v: &mut UiView) {
                 ],
             );
         });
-        let c_auto = format!("Auto ({})", if r.cosited { "left" } else { "center" });
+        let c_auto = format!("Auto ({})", crate::i18n::tr(if r.cosited { "left" } else { "center" }));
         row(ui, "Chroma siting", |ui| {
             combo(
                 ui,
@@ -573,7 +584,7 @@ fn presets_section(ui: &mut egui::Ui, v: &mut UiView) {
             };
             egui::ComboBox::from_id_salt("preset").selected_text(cur).width(180.0).show_ui(ui, |ui| {
                 if v.presets.is_empty() {
-                    ui.label(RichText::new("No presets yet").color(INK_SOFT));
+                    ui.label(RichText::new(crate::i18n::tr("No presets yet")).color(INK_SOFT));
                 }
                 for (i, e) in v.presets.iter().enumerate() {
                     let label = if i < 9 { format!("{} · {}", i + 1, e.name) } else { e.name.clone() };
@@ -594,7 +605,7 @@ fn presets_section(ui: &mut egui::Ui, v: &mut UiView) {
         row(ui, "Save as", |ui| {
             let edit = ui.add(
                 egui::TextEdit::singleline(v.preset_name)
-                    .hint_text("Preset name")
+                    .hint_text(crate::i18n::tr("Preset name"))
                     .desired_width(150.0),
             );
             let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -608,7 +619,11 @@ fn presets_section(ui: &mut egui::Ui, v: &mut UiView) {
             ui.add_space(LABEL_W + 8.0);
             if let Some(active) = v.active_preset {
                 if theme::button(ui, "update", Btn::Secondary)
-                    .on_hover_text(format!("Overwrite \"{}\" with the current settings", active.name))
+                    .on_hover_text(if crate::i18n::is_fr() {
+                        format!("Remplacer « {} » par les réglages actuels", active.name)
+                    } else {
+                        format!("Overwrite \"{}\" with the current settings", active.name)
+                    })
                     .clicked()
                 {
                     v.actions.push(UiAction::UpdatePreset);
@@ -631,12 +646,54 @@ fn presets_section(ui: &mut egui::Ui, v: &mut UiView) {
                 }
             }
             if theme::button(ui, "folder", Btn::Secondary)
-                .on_hover_text("Open the presets folder. Renamed, copied or deleted files show up here automatically.")
+                .on_hover_text(crate::i18n::tr("Open the presets folder. Renamed, copied or deleted files show up here automatically."))
                 .clicked()
             {
                 v.actions.push(UiAction::OpenPresetsFolder);
             }
         });
+        row(ui, "Share", |ui| {
+            if theme::button(ui, "export all", Btn::Secondary)
+                .on_hover_text(crate::i18n::tr("Save every preset into one .json file"))
+                .clicked()
+            {
+                v.actions.push(UiAction::ExportProfiles);
+            }
+            if theme::button(ui, "import", Btn::Secondary)
+                .on_hover_text(crate::i18n::tr("Add presets from a .json file (existing names are kept)"))
+                .clicked()
+            {
+                v.actions.push(UiAction::ImportProfiles);
+            }
+        });
+        if let (Some(dev), Some(active)) = (v.active_device, v.active_preset) {
+            let linked = v.settings.device_profiles.get(&dev.name).cloned();
+            row(ui, "Auto for card", |ui| {
+                match linked.as_deref() {
+                    Some(n) if n == active.name => {
+                        theme::tag(ui, "linked", PINE, BONE);
+                        if theme::button(ui, "unlink", Btn::Secondary).clicked() {
+                            v.settings.device_profiles.remove(&dev.name);
+                        }
+                    }
+                    other => {
+                        if theme::button(ui, "use for this card", Btn::Secondary)
+                            .on_hover_text(if crate::i18n::is_fr() {
+                                format!("Charger « {} » automatiquement dès que {} devient la carte active", active.name, dev.name)
+                            } else {
+                                format!("Load \"{}\" automatically whenever {} becomes the active card", active.name, dev.name)
+                            })
+                            .clicked()
+                        {
+                            v.settings.device_profiles.insert(dev.name.clone(), active.name.clone());
+                        }
+                        if let Some(o) = other {
+                            ui.label(theme::margin_text(&format!("{} {}", crate::i18n::tr("now:"), ellipsize(o, 14))));
+                        }
+                    }
+                }
+            });
+        }
         note(
             ui,
             "Presets keep picture, scaling, frame, display and audio processing — not which devices you use. Ctrl+1…9 loads them.",
@@ -683,7 +740,7 @@ fn backdrop_section(ui: &mut egui::Ui, v: &mut UiView) {
         }
         if s.background_mode == BackgroundMode::Image {
             row(ui, "Image", |ui| {
-                let name = s.background_image.as_deref().map(crate::assets::short).unwrap_or_else(|| "none".into());
+                let name = s.background_image.as_deref().map(crate::assets::short).unwrap_or_else(|| crate::i18n::tr("none").into());
                 ui.label(RichText::new(ellipsize(&name, 20)).font(theme::mono(18.0)));
                 if theme::button(ui, "browse", Btn::Secondary).clicked() {
                     v.actions.push(UiAction::PickBackground);
@@ -717,7 +774,7 @@ fn backdrop_section(ui: &mut egui::Ui, v: &mut UiView) {
         });
         if s.frame_style == FrameStyle::Image {
             row(ui, "Frame image", |ui| {
-                let name = s.frame_image.as_deref().map(crate::assets::short).unwrap_or_else(|| "none".into());
+                let name = s.frame_image.as_deref().map(crate::assets::short).unwrap_or_else(|| crate::i18n::tr("none").into());
                 ui.label(RichText::new(ellipsize(&name, 20)).font(theme::mono(18.0)));
                 if theme::button(ui, "browse", Btn::Secondary).clicked() {
                     v.actions.push(UiAction::PickFrame);
@@ -725,7 +782,7 @@ fn backdrop_section(ui: &mut egui::Ui, v: &mut UiView) {
             });
             row(ui, "Corner size", |ui| {
                 ui.add(egui::DragValue::new(&mut s.frame_slice).range(1..=1024).suffix(" px"))
-                    .on_hover_text("Size of the frame image's corners. They stay sharp; the edges stretch.");
+                    .on_hover_text(crate::i18n::tr("Size of the frame image's corners. They stay sharp; the edges stretch."));
             });
         }
         if matches!(s.frame_style, FrameStyle::Outline | FrameStyle::PixelCard | FrameStyle::Image) {
@@ -737,7 +794,7 @@ fn backdrop_section(ui: &mut egui::Ui, v: &mut UiView) {
             let max = s.frame_thickness;
             row(ui, "Overlap", |ui| {
                 ui.add(egui::Slider::new(&mut s.frame_overlap, 0.0..=max).suffix(" px").fixed_decimals(0))
-                    .on_hover_text("Pull the frame over the video edge (hides rounded inner corners).");
+                    .on_hover_text(crate::i18n::tr("Pull the frame over the video edge (hides rounded inner corners)."));
             });
         }
         if matches!(s.frame_style, FrameStyle::Outline | FrameStyle::HardShadow) {
@@ -747,12 +804,12 @@ fn backdrop_section(ui: &mut egui::Ui, v: &mut UiView) {
         }
         if s.frame_style == FrameStyle::PixelCard {
             row(ui, "Card colours", |ui| {
-                ui.color_edit_button_rgb(&mut s.card_fill).on_hover_text("Band");
-                ui.label(RichText::new("band").font(theme::mono(16.0)).color(INK_SOFT));
-                ui.color_edit_button_rgb(&mut s.card_line).on_hover_text("Edge lines");
-                ui.label(RichText::new("lines").font(theme::mono(16.0)).color(INK_SOFT));
-                ui.color_edit_button_rgb(&mut s.card_shadow).on_hover_text("Hard shadow");
-                ui.label(RichText::new("shadow").font(theme::mono(16.0)).color(INK_SOFT));
+                ui.color_edit_button_rgb(&mut s.card_fill).on_hover_text(crate::i18n::tr("Band"));
+                ui.label(RichText::new(crate::i18n::tr("band")).font(theme::mono(16.0)).color(INK_SOFT));
+                ui.color_edit_button_rgb(&mut s.card_line).on_hover_text(crate::i18n::tr("Edge lines"));
+                ui.label(RichText::new(crate::i18n::tr("lines")).font(theme::mono(16.0)).color(INK_SOFT));
+                ui.color_edit_button_rgb(&mut s.card_shadow).on_hover_text(crate::i18n::tr("Hard shadow"));
+                ui.label(RichText::new(crate::i18n::tr("shadow")).font(theme::mono(16.0)).color(INK_SOFT));
             });
             row(ui, "", |ui| {
                 if theme::button(ui, "default colours", Btn::Secondary).clicked() {
@@ -765,7 +822,7 @@ fn backdrop_section(ui: &mut egui::Ui, v: &mut UiView) {
         }
         row(ui, "Margin", |ui| {
             ui.add(egui::Slider::new(&mut s.video_inset, 0.0..=300.0).suffix(" px").fixed_decimals(0))
-                .on_hover_text("Extra space around the video so more background shows.");
+                .on_hover_text(crate::i18n::tr("Extra space around the video so more background shows."));
         });
         if s.frame_style == FrameStyle::Image && s.frame_image.is_some() && !v.frame_loaded {
             note(ui, "Loading frame…");
@@ -809,6 +866,19 @@ fn display_section(ui: &mut egui::Ui, v: &mut UiView) {
         row(ui, "", |ui| {
             theme::check(ui, &mut s.always_on_top, "Always on top");
         });
+        row(ui, "Ghost mode", |ui| {
+            let label = if v.ghost { "exit ghost" } else { "enter ghost" };
+            if theme::button(ui, label, if v.ghost { Btn::Danger } else { Btn::Secondary }).clicked() {
+                v.actions.push(UiAction::ToggleGhost);
+            }
+        });
+        row(ui, "Ghost opacity", |ui| {
+            ui.add(egui::Slider::new(&mut s.ghost_opacity, 0.15..=1.0).fixed_decimals(2));
+        });
+        note(
+            ui,
+            "Ghost: borderless, on top, see-through, clicks pass through. Leave with Ctrl+Alt+G (works from any app).",
+        );
         row(ui, "", |ui| {
             theme::check(ui, &mut s.start_fullscreen, "Start fullscreen");
         });
@@ -842,12 +912,12 @@ fn audio_section(ui: &mut egui::Ui, v: &mut UiView) {
             let cur = s
                 .audio_input
                 .clone()
-                .unwrap_or_else(|| "Auto (match video)".into());
+                .unwrap_or_else(|| crate::i18n::tr("Auto (match video)").into());
             egui::ComboBox::from_id_salt("ain")
                 .selected_text(ellipsize(&cur, 26))
                 .width(200.0)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut s.audio_input, None, "Auto (match video)");
+                    ui.selectable_value(&mut s.audio_input, None, crate::i18n::tr("Auto (match video)"));
                     for n in v.audio_inputs {
                         ui.selectable_value(&mut s.audio_input, Some(n.clone()), n);
                     }
@@ -862,7 +932,7 @@ fn audio_section(ui: &mut egui::Ui, v: &mut UiView) {
                 .selected_text(ellipsize(&cur, 26))
                 .width(200.0)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut s.audio_output, None, "System default");
+                    ui.selectable_value(&mut s.audio_output, None, crate::i18n::tr("System default"));
                     for n in v.audio_outputs {
                         ui.selectable_value(&mut s.audio_output, Some(n.clone()), n);
                     }
@@ -886,12 +956,12 @@ fn audio_section(ui: &mut egui::Ui, v: &mut UiView) {
         });
         row(ui, "", |ui| {
             theme::check(ui, &mut s.audio_ms2109_fix, "MS2109 fix (96k mono → 48k stereo)")
-                .on_hover_text("Cheap MacroSilicon cards mislabel their audio. Only applies when the input reports 96 kHz mono.");
+                .on_hover_text(crate::i18n::tr("Cheap MacroSilicon cards mislabel their audio. Only applies when the input reports 96 kHz mono."));
         });
         ui.add_space(2.0);
         row(ui, "", |ui| {
             theme::check(ui, &mut s.audio_dc_block, "Remove DC offset")
-                .on_hover_text("Some cards add a constant offset in their analog audio stage.");
+                .on_hover_text(crate::i18n::tr("Some cards add a constant offset in their analog audio stage."));
         });
         row(ui, "", |ui| {
             theme::check(ui, &mut s.audio_nr, "Hiss reduction (+11 ms)").on_hover_text(
@@ -911,7 +981,7 @@ fn audio_section(ui: &mut egui::Ui, v: &mut UiView) {
         }
         row(ui, "", |ui| {
             theme::check(ui, &mut s.audio_gate, "Noise gate")
-                .on_hover_text("Fades the card's hiss to silence when nothing is playing. 1 ms attack, so sounds aren't clipped.");
+                .on_hover_text(crate::i18n::tr("Fades the card's hiss to silence when nothing is playing. 1 ms attack, so sounds aren't clipped."));
             if s.audio_gate {
                 match v.audio_gate_open {
                     Some(true) => theme::tag(ui, "open", PINE, BONE),
@@ -928,14 +998,14 @@ fn audio_section(ui: &mut egui::Ui, v: &mut UiView) {
                 Some(f) => {
                     ui.label(RichText::new(format!("{f:.1} dBFS")).font(theme::mono(18.0)));
                     if theme::button(ui, "set gate", Btn::Secondary)
-                        .on_hover_text("Threshold = measured floor + 8 dB. Measure while nothing is playing.")
+                        .on_hover_text(crate::i18n::tr("Threshold = measured floor + 8 dB. Measure while nothing is playing."))
                         .clicked()
                     {
                         s.audio_gate_db = (f + 8.0).clamp(-80.0, -20.0).round();
                     }
                 }
                 None => {
-                    ui.label(RichText::new("measuring…").font(theme::mono(18.0)).color(INK_SOFT));
+                    ui.label(RichText::new(crate::i18n::tr("measuring…")).font(theme::mono(18.0)).color(INK_SOFT));
                 }
             });
         }
@@ -946,7 +1016,7 @@ fn audio_section(ui: &mut egui::Ui, v: &mut UiView) {
             meter(ui, "R", r);
         }
         if let Some(e) = &v.audio_error {
-            ui.label(RichText::new(e).color(VERMILLION).size(12.0));
+            ui.label(RichText::new(crate::i18n::tr(e)).color(VERMILLION).size(12.0));
         }
         ui.add_space(2.0);
         if theme::button(ui, "restart audio", Btn::Secondary).clicked() {
@@ -1008,13 +1078,62 @@ fn overlay_section(ui: &mut egui::Ui, v: &mut UiView) {
                 ],
             );
         });
+        row(ui, "HUD preset", |ui| {
+            let cur = s.hud.preset_name();
+            egui::ComboBox::from_id_salt("hud_preset")
+                .selected_text(crate::i18n::tr(cur))
+                .show_ui(ui, |ui| {
+                    for (name, items) in crate::settings::HudItems::PRESETS {
+                        if ui.selectable_label(cur == name, crate::i18n::tr(name)).clicked() {
+                            s.hud = items;
+                            s.show_stats = true;
+                        }
+                    }
+                });
+        });
+        {
+            let h = &mut s.hud;
+            ui.horizontal_wrapped(|ui| {
+                theme::check(ui, &mut h.fps, "FPS");
+                theme::check(ui, &mut h.pacing, "Pacing");
+                theme::check(ui, &mut h.latency, "Latency");
+                theme::check(ui, &mut h.gpu_cpu, "GPU/CPU");
+                theme::check(ui, &mut h.source, "Source");
+                theme::check(ui, &mut h.colour, "Colour");
+                theme::check(ui, &mut h.upscale, "Upscale");
+                theme::check(ui, &mut h.framegen, "Frame gen");
+                theme::check(ui, &mut h.audio, "Audio");
+                theme::check(ui, &mut h.output, "Output");
+                theme::check(ui, &mut h.graph, "Graph");
+                theme::check(ui, &mut h.header, "Header");
+                theme::check(ui, &mut h.boxed, "Boxed");
+            });
+        }
+        row(ui, "HUD opacity", |ui| {
+            ui.add(egui::Slider::new(&mut s.hud_opacity, 0.2..=1.0).fixed_decimals(2));
+            if s.hud_pos.is_some() && theme::button(ui, "snap", Btn::Secondary)
+                .on_hover_text(crate::i18n::tr("Back to the corner (or double-click the HUD)"))
+                .clicked()
+            {
+                s.hud_pos = None;
+            }
+        });
+        note(ui, "Drag the HUD with the mouse to place it anywhere.");
+        row(ui, "Language", |ui| {
+            combo(
+                ui,
+                "lang",
+                &mut s.language,
+                &[(Language::Francais, "Français"), (Language::English, "English")],
+            );
+        });
         row(ui, "UI scale", |ui| {
             ui.add(egui::Slider::new(&mut s.ui_scale, 0.75..=2.0).fixed_decimals(2));
         });
         ui.add_space(2.0);
         ui.horizontal(|ui| {
             if theme::button(ui, "screenshot", Btn::Primary)
-                .on_hover_text("Ctrl+S / F12")
+                .on_hover_text(crate::i18n::tr("Ctrl+S / F12"))
                 .clicked()
             {
                 v.actions.push(UiAction::Screenshot);
@@ -1032,8 +1151,11 @@ fn overlay_section(ui: &mut egui::Ui, v: &mut UiView) {
 // ---------------------------------------------------------------------------------
 // HUD
 
-pub fn stats_overlay(ctx: &egui::Context, v: &UiView) {
+pub fn stats_overlay(ctx: &egui::Context, v: &mut UiView) {
     let st = v.stats;
+    let opacity = v.settings.hud_opacity.clamp(0.2, 1.0);
+    let screen = ctx.content_rect();
+    let h = v.settings.hud;
     let (anchor, off) = match v.settings.stats_corner {
         1 => (egui::Align2::RIGHT_TOP, egui::vec2(-EDGE - 6.0, EDGE)),
         2 => (egui::Align2::LEFT_BOTTOM, egui::vec2(EDGE, -EDGE - 6.0)),
@@ -1043,41 +1165,59 @@ pub fn stats_overlay(ctx: &egui::Context, v: &UiView) {
         ),
         _ => (egui::Align2::LEFT_TOP, egui::vec2(EDGE, EDGE)),
     };
-    egui::Area::new(egui::Id::unique("stats"))
+    let mut area = egui::Area::new(egui::Id::new("stats_hud"))
         .fade_in(false)
-        .anchor(anchor, off)
-        .interactable(false)
-        .order(egui::Order::Middle)
+        .sense(egui::Sense::click_and_drag())
+        .order(egui::Order::Middle);
+    area = match v.settings.hud_pos {
+        Some(p) => area.fixed_pos(egui::pos2(
+            screen.left() + p[0] * screen.width(),
+            screen.top() + p[1] * screen.height(),
+        )),
+        None => area.anchor(anchor, off),
+    };
+    let out = area
         .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(Color32::from_rgba_unmultiplied(0x16, 0x13, 0x10, 238))
-                .stroke(egui::Stroke::new(2.0, INK))
-                .shadow(theme::hard_shadow(5, COBALT))
-                .inner_margin(egui::Margin::same(12))
+            ui.set_opacity(opacity);
+            let frame = if h.boxed {
+                egui::Frame::new()
+                    .fill(Color32::from_rgba_unmultiplied(0x16, 0x13, 0x10, 238))
+                    .stroke(egui::Stroke::new(2.0, INK))
+                    .shadow(theme::hard_shadow(5, COBALT))
+                    .inner_margin(egui::Margin::same(12))
+            } else {
+                egui::Frame::new()
+                    .fill(Color32::from_rgba_unmultiplied(0x16, 0x13, 0x10, 150))
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+            };
+            frame
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("SIGNAL").font(theme::pixel(15.0)).color(BONE));
-                        ui.add_space(6.0);
-                        state_tag(ui, v.state);
-                    });
-                    ui.add_space(4.0);
+                    if h.header {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(crate::i18n::tr("SIGNAL")).font(theme::pixel(15.0)).color(BONE));
+                            ui.add_space(6.0);
+                            state_tag(ui, v.state);
+                        });
+                        ui.add_space(4.0);
+                    }
                     let kv = |ui: &mut egui::Ui, k: &str, val: String, col: Color32| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 0.0;
                             // VT323 is monospaced: pad the key for a clean left-aligned column.
                             ui.label(
-                                RichText::new(format!("{k:<9}"))
+                                RichText::new(format!("{:<9}", k.to_uppercase()))
                                     .font(theme::mono(17.0))
                                     .color(TAN),
                             );
                             ui.label(RichText::new(val).font(theme::mono(17.0)).color(col));
                         });
                     };
-                    if let Some(f) = v.active_format {
+                    if !h.source {
+                    } else if let Some(f) = v.active_format {
                         kv(
                             ui,
-                            "SOURCE",
+                            crate::i18n::tr("SOURCE"),
                             format!(
                                 "{} {}x{} @ {:.2}",
                                 f.format.name(),
@@ -1090,101 +1230,140 @@ pub fn stats_overlay(ctx: &egui::Context, v: &UiView) {
                         if slow_mode_hint(f, st.capture_fps).is_some() {
                             kv(
                                 ui,
-                                "WARN",
-                                format!("device only delivering {:.0} fps", st.capture_fps),
+                                crate::i18n::tr("WARN"),
+                                if crate::i18n::is_fr() {
+                                    format!("la carte ne livre que {:.0} i/s", st.capture_fps)
+                                } else {
+                                    format!("device only delivering {:.0} fps", st.capture_fps)
+                                },
                                 VERMILLION,
                             );
                         }
                     } else {
-                        kv(ui, "SOURCE", "none".into(), BONE);
+                        kv(ui, crate::i18n::tr("SOURCE"), crate::i18n::tr("none").into(), BONE);
                     }
-                    if let Some((text, ok)) = &v.upscale_status {
-                        kv(ui, "UPSCALE", text.clone(), if *ok { BONE } else { VERMILLION });
+                    if h.upscale
+                        && let Some((text, ok)) = &v.upscale_status
+                    {
+                        kv(ui, crate::i18n::tr("UPSCALE"), text.clone(), if *ok { BONE } else { VERMILLION });
                     }
-                    if v.settings.frame_gen
+                    if h.framegen
+                        && v.settings.frame_gen
                         && let Some((text, ok)) = &v.framegen_status
                     {
-                        kv(ui, "FRAMEGEN", text.clone(), if *ok { BONE } else { VERMILLION });
+                        kv(ui, crate::i18n::tr("FRAMEGEN"), text.clone(), if *ok { BONE } else { VERMILLION });
                     }
                     let r = v.resolved;
-                    if r.matrix == 0 {
-                        kv(ui, "COLOUR", "—".into(), BONE);
+                    if !h.colour {
+                    } else if r.matrix == 0 {
+                        kv(ui, crate::i18n::tr("COLOUR"), "—".into(), BONE);
                     } else {
                         kv(
                             ui,
-                            "COLOUR",
+                            crate::i18n::tr("COLOUR"),
                             format!(
                                 "BT.{} {} · chroma {}",
                                 r.matrix,
-                                if r.full_range { "full" } else { "limited" },
-                                if r.cosited { "left" } else { "center" }
+                                crate::i18n::tr(if r.full_range { "full" } else { "limited" }),
+                                crate::i18n::tr(if r.cosited { "left" } else { "center" })
                             ),
                             BONE,
                         );
                     }
-                    kv(
-                        ui,
-                        "FPS",
-                        format!(
-                            "capture {:.2} · present {:.2}",
-                            st.capture_fps, st.present_fps
-                        ),
-                        BONE,
-                    );
-                    kv(
-                        ui,
-                        "PACING",
-                        format!(
-                            "{:.2} ms ± {:.2} · drops {}",
-                            st.interval_ms, st.jitter_ms, st.dropped
-                        ),
-                        BONE,
-                    );
+                    if h.fps {
+                        kv(
+                            ui,
+                            crate::i18n::tr("FPS"),
+                            format!(
+                                "capture {:.2} · present {:.2}",
+                                st.capture_fps, st.present_fps
+                            ),
+                            BONE,
+                        );
+                    }
+                    if h.pacing {
+                        kv(
+                            ui,
+                            crate::i18n::tr("PACING"),
+                            format!(
+                                "{:.2} ms ± {:.2} · drops {}",
+                                st.interval_ms, st.jitter_ms, st.dropped
+                            ),
+                            BONE,
+                        );
+                    }
                     let dev = st
                         .device_latency_ms
                         .map(|d| format!(" · device {d:.1}"))
                         .unwrap_or_default();
-                    kv(
-                        ui,
-                        "LATENCY",
-                        format!(
-                            "{:.2} ms (max {:.2}){dev}",
-                            st.latency_ms, st.latency_max_ms
-                        ),
-                        SKY,
-                    );
-                    kv(
-                        ui,
-                        "GPU/CPU",
-                        format!("upload {:.2} · cpu {:.2} ms", st.upload_ms, st.cpu_frame_ms),
-                        BONE,
-                    );
-                    if let Some(fill) = st.audio_fill_ms {
+                    if h.latency {
+                        kv(
+                            ui,
+                            crate::i18n::tr("LATENCY"),
+                            format!(
+                                "{:.2} ms (max {:.2}){dev}",
+                                st.latency_ms, st.latency_max_ms
+                            ),
+                            SKY,
+                        );
+                    }
+                    if h.gpu_cpu {
+                        kv(
+                            ui,
+                            crate::i18n::tr("GPU/CPU"),
+                            format!("upload {:.2} · cpu {:.2} ms", st.upload_ms, st.cpu_frame_ms),
+                            BONE,
+                        );
+                    }
+                    if h.audio
+                        && let Some(fill) = st.audio_fill_ms
+                    {
                         let rates = st
                             .audio_rates
                             .map(|(i, o)| format!(" · {i}→{o}"))
                             .unwrap_or_default();
                         kv(
                             ui,
-                            "AUDIO",
+                            crate::i18n::tr("AUDIO"),
                             format!("{fill:.1} ms · xruns {}{rates}", st.audio_underruns),
                             BONE,
                         );
                     }
-                    kv(
-                        ui,
-                        "OUTPUT",
-                        format!(
-                            "{:?} · {}",
-                            v.settings.present_mode,
-                            v.output_format.as_deref().unwrap_or("?")
-                        ),
-                        BONE,
-                    );
-                    ui.add_space(6.0);
-                    frame_graph(ui, st);
+                    if h.output {
+                        kv(
+                            ui,
+                            crate::i18n::tr("OUTPUT"),
+                            format!(
+                                "{:?} · {}",
+                                v.settings.present_mode,
+                                v.output_format.as_deref().unwrap_or("?")
+                            ),
+                            BONE,
+                        );
+                    }
+                    if h.graph {
+                        ui.add_space(6.0);
+                        frame_graph(ui, st);
+                    }
                 });
         });
+    let r = out.response;
+    if r.hovered() || r.dragged() {
+        ctx.set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    if r.double_clicked() {
+        v.settings.hud_pos = None;
+    } else if r.dragged() {
+        let d = r.drag_delta();
+        let max_x = (screen.right() - r.rect.width()).max(screen.left());
+        let max_y = (screen.bottom() - r.rect.height()).max(screen.top());
+        let x = (r.rect.min.x + d.x).clamp(screen.left(), max_x);
+        let y = (r.rect.min.y + d.y).clamp(screen.top(), max_y);
+        v.settings.hud_pos = Some([
+            (x - screen.left()) / screen.width().max(1.0),
+            (y - screen.top()) / screen.height().max(1.0),
+        ]);
+    }
 }
 
 fn frame_graph(ui: &mut egui::Ui, st: &Stats) {
@@ -1326,10 +1505,10 @@ pub fn no_signal(ctx: &egui::Context, text: &str) {
                             color: c,
                             ..Default::default()
                         };
-                        title.append("NO SIGNAL", 0.0, fmt(INK));
+                        title.append(&crate::i18n::tr("No signal").to_uppercase(), 0.0, fmt(INK));
                         title.append(".", 0.0, fmt(VERMILLION));
                         ui.label(title);
-                        ui.label(RichText::new(sub).font(theme::mono(20.0)).color(INK_SOFT));
+                        ui.label(RichText::new(crate::i18n::tr(sub)).font(theme::mono(20.0)).color(INK_SOFT));
                         ui.add_space(8.0);
                         theme::dashed_rule(ui);
                         ui.label(theme::margin_text("F1 · tab · right-click — settings"));
