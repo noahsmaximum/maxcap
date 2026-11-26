@@ -185,6 +185,7 @@ pub enum Btn {
 
 /// Chunky button that sinks into its hard shadow when pressed.
 pub fn button(ui: &mut Ui, text: &str, kind: Btn) -> Response {
+    let text = crate::i18n::tr(text);
     let (fill, fg) = match kind {
         Btn::Primary => (COBALT, BONE),
         Btn::Secondary => (BONE, INK),
@@ -222,6 +223,7 @@ pub fn button(ui: &mut Ui, text: &str, kind: Btn) -> Response {
 
 /// Square pixel checkbox: cobalt block when on.
 pub fn check(ui: &mut Ui, value: &mut bool, label: &str) -> Response {
+    let label = crate::i18n::tr(label);
     let galley = ui
         .painter()
         .layout_no_wrap(label.to_owned(), body(13.5), INK);
@@ -256,6 +258,7 @@ pub fn check(ui: &mut Ui, value: &mut bool, label: &str) -> Response {
 
 /// Small tag chip ("● LIVE", "HOT DROP") with a 2px hard shadow.
 pub fn tag(ui: &mut Ui, text: &str, fill: Color32, fg: Color32) -> Response {
+    let text = crate::i18n::tr(text);
     let galley = ui
         .painter()
         .layout_no_wrap(text.to_uppercase(), mono(16.0), fg);
@@ -273,6 +276,7 @@ pub fn tag(ui: &mut Ui, text: &str, fill: Color32, fg: Color32) -> Response {
 
 /// Marginalia label: VT323, uppercase, soft ink.
 pub fn margin_text(text: &str) -> RichText {
+    let text = crate::i18n::tr(text);
     RichText::new(text.to_uppercase())
         .font(mono(16.0))
         .color(INK_SOFT)
@@ -287,6 +291,7 @@ pub fn section(
     add_body: impl FnOnce(&mut Ui),
 ) {
     let id = ui.make_persistent_id(("section", title));
+    let title = crate::i18n::tr(title);
     let mut open = ui.data_mut(|d| *d.get_persisted_mut_or(id, default_open));
     let width = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 28.0), Sense::click());

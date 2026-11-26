@@ -5,6 +5,7 @@ mod assets;
 mod audio;
 mod capture;
 mod dsp;
+mod i18n;
 mod render;
 #[cfg(all(windows, feature = "rtx-video"))]
 mod rtx;
@@ -29,6 +30,8 @@ use winit::window::{Fullscreen, Window, WindowId, WindowLevel};
 #[derive(Debug, Clone, Copy)]
 enum UserEvent {
     Wake,
+    /// Ctrl+Alt+G pressed anywhere in Windows (the ghost window gets no keyboard focus).
+    GhostToggle,
 }
 
 struct Gfx {
@@ -67,6 +70,12 @@ struct App {
     applied_surface: AppliedSurface,
     applied_on_top: Option<bool>,
     applied_ui_scale: f32,
+    /// Ghost mode: borderless, on top, see-through and click-through. Never saved,
+    /// so a restart can never leave the window unreachable.
+    ghost: bool,
+    applied_ghost: Option<(bool, u8)>,
+    /// Card the auto-profile logic last looked at (so it fires on a change, not every frame).
+    auto_profile_device: Option<String>,
 
     audio: Option<audio::AudioPassthrough>,
     audio_key: Option<(bool, bool, Option<String>, Option<String>, Option<String>)>,
@@ -115,13 +124,21 @@ struct App {
 
 impl App {
     fn new(proxy: EventLoopProxy<UserEvent>) -> Self {
+        settings::seed_builtin_presets();
         let mut settings = Settings::load();
+        match std::env::var("MAXCAP_LANG").as_deref() {
+            Ok("en") => settings.language = settings::Language::English,
+            Ok("fr") => settings.language = settings::Language::Francais,
+            _ => {}
+        }
         let smoke_ui = std::env::var_os("MAXCAP_SMOKE_UI").is_some();
         if smoke_ui {
             // MAXCAP_SMOKE_UI=panel shows only the settings card (README screenshots).
             settings.show_stats = std::env::var("MAXCAP_SMOKE_UI").as_deref() != Ok("panel");
         }
         let proxy_for_assets = proxy.clone();
+        spawn_ghost_hotkey(proxy.clone());
+        let auto_profile_device = settings.device_name.clone();
         let pacer = spawn_pacer(proxy.clone());
         let last_seen = settings.clone();
         Self {
@@ -139,6 +156,9 @@ impl App {
             applied_surface: AppliedSurface::default(),
             applied_on_top: None,
             applied_ui_scale: 0.0,
+            ghost: std::env::var_os("MAXCAP_GHOST").is_some(),
+            applied_ghost: None,
+            auto_profile_device,
             audio: None,
             audio_key: None,
             audio_error: None,
@@ -460,19 +480,62 @@ impl App {
         self.configure_surface();
         self.sync_capture();
         self.sync_audio();
+        self.sync_card_profile();
         if let Some(w) = &self.window {
-            if self.applied_on_top != Some(self.settings.always_on_top) {
-                w.set_window_level(if self.settings.always_on_top {
+            let on_top = self.settings.always_on_top || self.ghost;
+            if self.applied_on_top != Some(on_top) {
+                w.set_window_level(if on_top {
                     WindowLevel::AlwaysOnTop
                 } else {
                     WindowLevel::Normal
                 });
-                self.applied_on_top = Some(self.settings.always_on_top);
+                self.applied_on_top = Some(on_top);
+            }
+            let alpha = (self.settings.ghost_opacity.clamp(0.15, 1.0) * 255.0) as u8;
+            let want = (self.ghost, alpha);
+            if self.applied_ghost != Some(want) {
+                if self.applied_ghost.map(|g| g.0) != Some(self.ghost) {
+                    w.set_decorations(!self.ghost);
+                    let _ = w.set_cursor_hittest(!self.ghost);
+                }
+                #[cfg(windows)]
+                if self.ghost {
+                    set_window_alpha(w, alpha);
+                }
+                self.applied_ghost = Some(want);
             }
         }
         if self.applied_ui_scale != self.settings.ui_scale {
             ui::apply_style(&self.egui_ctx, self.settings.ui_scale);
             self.applied_ui_scale = self.settings.ui_scale;
+        }
+    }
+
+    /// Load the preset linked to the active capture card when the card changes.
+    fn sync_card_profile(&mut self) {
+        let Some(name) = self.settings.device_name.clone() else { return };
+        if self.auto_profile_device.as_ref() == Some(&name) {
+            return;
+        }
+        self.auto_profile_device = Some(name.clone());
+        let Some(want) = self.settings.device_profiles.get(&name).cloned() else { return };
+        self.refresh_presets();
+        match self.presets.iter().find(|e| e.name == want).map(|e| e.path.clone()) {
+            Some(path) => self.load_preset(&path),
+            None => self.toast(format!("Linked preset \"{want}\" not found for {name}")),
+        }
+    }
+
+    fn toggle_ghost(&mut self) {
+        self.ghost = !self.ghost;
+        if self.ghost {
+            self.show_ui = false;
+            self.toast("Ghost mode - Ctrl+Alt+G to leave");
+        } else {
+            self.toast("Ghost mode off");
+        }
+        if let Some(w) = &self.window {
+            w.request_redraw();
         }
     }
 
@@ -544,7 +607,7 @@ impl App {
     }
 
     fn toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+        self.toast = Some((i18n::tr_dyn(&msg.into()), Instant::now()));
     }
 
     fn update_stats(&mut self) {
@@ -626,6 +689,7 @@ impl App {
                 self.show_ui = !self.show_ui
             }
             (Key::Named(NamedKey::F2), _) => self.settings.show_stats = !self.settings.show_stats,
+            (_, Some(KeyCode::KeyG)) if !ctrl => self.toggle_ghost(),
             (Key::Named(NamedKey::F11), _) => self.toggle_fullscreen(),
             (Key::Named(NamedKey::Enter), _) if alt => self.toggle_fullscreen(),
             (Key::Named(NamedKey::F12), _) => self.screenshot_requested = true,
@@ -767,6 +831,7 @@ impl App {
         if let Some(a) = &self.audio {
             self.stats.audio_peaks = a.shared.peaks();
         }
+        i18n::set(self.settings.language == settings::Language::Francais);
         let raw_input = self.egui_state.as_mut().unwrap().take_egui_input(&window);
         let show_ui = self.show_ui;
         let has_source = textures.is_some();
@@ -808,6 +873,7 @@ impl App {
                 stats: &self.stats,
                 presets: &self.presets,
                 active_preset: self.active_preset.as_ref().map(|(e, _)| e),
+                ghost: self.ghost,
                 preset_modified: false,
                 preset_name: &mut self.preset_name,
                 frame_loaded: self.assets.frame.is_some(),
@@ -826,7 +892,7 @@ impl App {
                     ui::settings_panel(ui, &mut view);
                 }
                 if view.settings.show_stats {
-                    ui::stats_overlay(&ctx, &view);
+                    ui::stats_overlay(&ctx, &mut view);
                 }
                 if !has_source {
                     let msg = match view.state {
@@ -1076,6 +1142,35 @@ impl App {
                     }
                     self.refresh_presets();
                 }
+                ui::UiAction::ToggleGhost => self.toggle_ghost(),
+                ui::UiAction::ExportProfiles => {
+                    let file = rfd::FileDialog::new()
+                        .set_title("Export MaxCap profiles")
+                        .set_file_name("maxcap-profiles.json")
+                        .add_filter("MaxCap profiles", &["json"])
+                        .save_file();
+                    if let Some(path) = file {
+                        match settings::export_profiles(&path) {
+                            Ok(n) => self.toast(format!("Exported {n} profiles")),
+                            Err(e) => self.toast(format!("Export failed: {e}")),
+                        }
+                    }
+                }
+                ui::UiAction::ImportProfiles => {
+                    let file = rfd::FileDialog::new()
+                        .set_title("Import MaxCap profiles")
+                        .add_filter("MaxCap profiles", &["json"])
+                        .pick_file();
+                    if let Some(path) = file {
+                        match settings::import_profiles(&path) {
+                            Ok(n) => {
+                                self.toast(format!("Imported {n} profiles"));
+                                self.refresh_presets();
+                            }
+                            Err(e) => self.toast(format!("Import failed: {e}")),
+                        }
+                    }
+                }
                 ui::UiAction::OpenPresetsFolder => {
                     let dir = settings::presets_dir();
                     let _ = std::fs::create_dir_all(&dir);
@@ -1181,6 +1276,48 @@ fn auto_pick(devices: &[DeviceInfo]) -> Option<DeviceInfo> {
 /// The GPU API each OS is best at; override with WGPU_BACKEND.
 /// Thread that sends a Wake at each requested instant. `thread::sleep` uses a
 /// high-resolution waitable timer on Windows; the last half-millisecond is spun.
+/// Ctrl+Alt+G from any app: polls the keys on a small thread (a click-through window
+/// never has keyboard focus, so it could not hear a normal shortcut).
+fn spawn_ghost_hotkey(proxy: EventLoopProxy<UserEvent>) {
+    #[cfg(windows)]
+    std::thread::spawn(move || {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        let down = |vk: i32| unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000 != 0;
+        let mut was = false;
+        loop {
+            let now = down(0x11) && down(0x12) && down(0x47); // Ctrl + Alt + G
+            if now && !was && proxy.send_event(UserEvent::GhostToggle).is_err() {
+                break;
+            }
+            was = now;
+            std::thread::sleep(Duration::from_millis(30));
+        }
+    });
+    #[cfg(not(windows))]
+    let _ = proxy;
+}
+
+/// Whole-window opacity (needs WS_EX_LAYERED, which ghost mode sets).
+#[cfg(windows)]
+fn set_window_alpha(w: &Window, alpha: u8) {
+    use windows::Win32::Foundation::{COLORREF, HWND};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongPtrW, LWA_ALPHA, SetLayeredWindowAttributes, SetWindowLongPtrW,
+        WS_EX_LAYERED,
+    };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    if let Ok(h) = w.window_handle()
+        && let RawWindowHandle::Win32(h) = h.as_raw()
+    {
+        let hwnd = HWND(h.hwnd.get() as *mut core::ffi::c_void);
+        unsafe {
+            let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED.0 as isize);
+            let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+        }
+    }
+}
+
 fn spawn_pacer(proxy: EventLoopProxy<UserEvent>) -> std::sync::mpsc::Sender<Instant> {
     let (tx, rx) = std::sync::mpsc::channel::<Instant>();
     std::thread::Builder::new()
@@ -1298,7 +1435,16 @@ impl ApplicationHandler<UserEvent> for App {
         #[cfg(windows)]
         let attrs = {
             use winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
-            let icon = |px| winit::window::Icon::from_resource(1, Some(winit::dpi::PhysicalSize::new(px, px))).ok();
+            // Embedded PNG first (always works); exe resource as the fallback.
+            let icon = |px: u32| {
+                let img = image::load_from_memory(include_bytes!("../assets/icon/maxcap.png")).ok()?;
+                let r = image::imageops::resize(&img.to_rgba8(), px, px, image::imageops::FilterType::Lanczos3);
+                winit::window::Icon::from_rgba(r.into_raw(), px, px)
+                    .ok()
+                    .or_else(|| {
+                        winit::window::Icon::from_resource(1, Some(winit::dpi::PhysicalSize::new(px, px))).ok()
+                    })
+            };
             attrs.with_window_icon(icon(32)).with_taskbar_icon(icon(256))
         };
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
@@ -1311,7 +1457,10 @@ impl ApplicationHandler<UserEvent> for App {
         window.request_redraw();
     }
 
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: UserEvent) {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
+        if matches!(event, UserEvent::GhostToggle) {
+            self.toggle_ghost();
+        }
         if let Some(w) = &self.window {
             w.request_redraw();
         }
@@ -1333,7 +1482,9 @@ impl ApplicationHandler<UserEvent> for App {
         // With the UI closed, pointer motion needs no repaint (it would re-present
         // the same video frame hundreds of times a second).
         let pointer_only = matches!(event, WindowEvent::CursorMoved { .. });
-        if response.as_ref().is_some_and(|r| r.repaint) && (self.show_ui || !pointer_only) {
+        if response.as_ref().is_some_and(|r| r.repaint)
+            && (self.show_ui || !pointer_only || self.egui_ctx.egui_is_using_pointer())
+        {
             // Pointer hover over the UI: cap re-presents at ~240 Hz (a 1 kHz mouse would
             // otherwise re-present the same video frame a thousand times a second).
             let next = self.last_render + Duration::from_micros(4167);
